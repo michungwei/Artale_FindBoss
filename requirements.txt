@@ -1,0 +1,7 @@
+pillow
+pyautogui
+requests
+opencv-python
+keyboard
+mss
+pynput
