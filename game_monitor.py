@@ -1375,7 +1375,77 @@ class GameMonitor:
         return "D"
     
     def stage_e(self):
-        """階段E: 遊戲內王怪檢測"""
+        """階段E: 專心BOSS檢測，不被中斷"""
+        # 直接進行BOSS檢測，不進行任何畫面匹配判斷
+        if self.detect_boss():
+            # 重置計時器 (檢測到BOSS後重新開始計時)
+            if hasattr(self, 'boss_check_start_time'):
+                delattr(self, 'boss_check_start_time')
+            
+            # 發送通知
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            message = f"BOSS出現！\n時間: {timestamp}"
+            
+            self.send_telegram_message(self.config["telegram_chat_id"], message)
+            
+            # 檢查是否要自動進入頻道切換
+            auto_switch = self.config.get("auto_channel_switch_after_boss", True)
+            
+            if auto_switch:
+                # 自動模式：發送通知並暫停等待5秒
+                self.is_paused = True
+                self.pause_continue_btn.config(text="繼續", style="Accent.TButton")
+                self.current_stage = "檢測到BOSS！已暫停，5秒後自動切換頻道..."
+                self.update_status()
+                
+                # 等待5秒倒數
+                for i in range(5, 0, -1):
+                    if not self.is_running:
+                        return "E"
+                    if not self.is_paused:  # 如果用戶手動點擊繼續，提前結束等待
+                        break
+                    self.current_stage = f"檢測到BOSS！已暫停，{i}秒後自動切換頻道..."
+                    self.update_status()
+                    time.sleep(1)
+                
+                # 自動恢復並進入頻道切換
+                self.is_paused = False
+                self.pause_continue_btn.config(text="暫停", style="TButton")
+                return "F"  # 進入頻道切換
+            else:
+                # 手動模式：暫停等待使用者點繼續
+                self.is_paused = True
+                self.pause_continue_btn.config(text="繼續", style="Accent.TButton")
+                self.current_stage = "檢測到BOSS - 請打完後點繼續"
+                self.update_status()
+                
+                # 等待使用者點繼續
+                while self.is_paused and self.is_running:
+                    time.sleep(0.1)
+                
+                self.pause_continue_btn.config(style="TButton")
+                return "F"
+        else:
+            # 沒有檢測到BOSS，計時邏輯
+            if not hasattr(self, 'boss_check_start_time'):
+                self.boss_check_start_time = time.time()
+                
+            elapsed = time.time() - self.boss_check_start_time
+            wait_time = self.config.get("boss_wait_time", 30)
+            remaining = max(0, wait_time - elapsed)
+            
+            if remaining > 0:
+                self.current_stage = f"階段E: 專心BOSS檢測中... 無BOSS還有 {remaining:.0f} 秒切頻道"
+                self.update_status()
+                time.sleep(0.1)  # 快速檢測間隔，每0.1秒檢測一次
+                return "E"
+            else:
+                # 超過等待時間，切換頻道
+                if hasattr(self, 'boss_check_start_time'):
+                    delattr(self, 'boss_check_start_time')
+                return "F"
+        
+        return "E"  # 繼續在階段E檢測BOSS
         # 檢查是否有階段E的截圖設定
         if "E" in self.stage_screenshots:
             # 檢測當前畫面是否匹配階段E（遊戲內畫面）
@@ -1399,12 +1469,26 @@ class GameMonitor:
                     auto_switch = self.config.get("auto_channel_switch_after_boss", True)
                     
                     if auto_switch:
-                        # 立即進入頻道切換
-                        self.current_stage = "檢測到BOSS！立即切換頻道..."
+                        # 自動模式：發送通知並暫停等待5秒
+                        self.is_paused = True
+                        self.pause_continue_btn.config(text="繼續", style="Accent.TButton")
+                        self.current_stage = "檢測到BOSS！已暫停，5秒後自動切換頻道..."
                         self.update_status()
-                        print("階段E: 檢測到BOSS，立即進入階段F")
                         
-                        return "F"  # 立即進入頻道切換
+                        # 等待5秒倒數
+                        for i in range(5, 0, -1):
+                            if not self.is_running:
+                                return "E"
+                            if not self.is_paused:  # 如果用戶手動點擊繼續，提前結束等待
+                                break
+                            self.current_stage = f"檢測到BOSS！已暫停，{i}秒後自動切換頻道..."
+                            self.update_status()
+                            time.sleep(1)
+                        
+                        # 自動恢復並進入頻道切換
+                        self.is_paused = False
+                        self.pause_continue_btn.config(text="暫停", style="TButton")
+                        return "F"  # 進入頻道切換
                     else:
                         # 手動模式：暫停等待使用者點繼續
                         self.is_paused = True
@@ -1525,7 +1609,7 @@ class GameMonitor:
                 if hasattr(self, 'boss_check_start_time'):
                     delattr(self, 'boss_check_start_time')
                 
-                return "E"  # 回到階段E繼續BOSS檢測
+                return "A"  # 回到階段A檢查頻道切換結果
             else:
                 # 檢查是否還在上個階段（階段E）
                 if "E" in self.stage_screenshots and self.detect_stage_match("E"):
@@ -1570,7 +1654,7 @@ class GameMonitor:
                 if hasattr(self, 'boss_check_start_time'):
                     delattr(self, 'boss_check_start_time')
                 
-                return "E"  # 回到階段E繼續BOSS檢測
+                return "A"  # 回到階段A檢查頻道切換結果
         
         return "F"  # 繼續在階段F，直到檢測到目標畫面
     
