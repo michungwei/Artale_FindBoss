@@ -24,7 +24,9 @@ class GameMonitor:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Artale找Boss神器")
-        self.root.geometry("800x600")
+        
+        # 設定視窗永遠在最上層
+        self.root.attributes('-topmost', True)
         
         # 系統狀態
         self.is_running = False
@@ -35,6 +37,10 @@ class GameMonitor:
         # 階段設定狀態
         self.stage_screenshots = {}
         self.setting_stage = None
+        
+        # 當機檢測設定狀態
+        self.crash_screenshots = {}
+        self.setting_crash = None
         
         # 滴管取色狀態
         self.eyedropper_active = False
@@ -59,9 +65,14 @@ class GameMonitor:
             }
         }
         
+        # 先載入設定，再設定視窗位置
         self.load_config()
+        self.load_window_geometry()
         self.create_widgets()
         self.setup_hotkeys()
+        
+        # 綁定視窗關閉事件
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
     def create_widgets(self):
         # 主框架
@@ -75,6 +86,7 @@ class GameMonitor:
             "telegram": False,
             "area": False,
             "stage": True,  # 預設收合
+            "crash": True,  # 預設收合
             "color": True,  # 預設收合
             "position": True  # 預設收合
         })
@@ -94,23 +106,27 @@ class GameMonitor:
         # 階段設定
         self.create_collapsible_section(main_frame, "stage", "階段設定(點擊右鍵看大圖)", 4, self.create_stage_widgets)
         
+        # 當機檢測設定
+        # self.create_collapsible_section(main_frame, "crash", "當機檢測設定(點擊右鍵看大圖)", 5, self.create_crash_widgets)
+        
         # BOSS訊息判斷設定
-        self.create_collapsible_section(main_frame, "color", "BOSS訊息判斷設定", 5, self.create_color_widgets)
+        self.create_collapsible_section(main_frame, "color", "BOSS訊息判斷設定", 6, self.create_color_widgets)
         
         # 點位設定
-        self.create_collapsible_section(main_frame, "position", "點位設定", 6, self.create_position_widgets)
+        self.create_collapsible_section(main_frame, "position", "點擊設定", 7, self.create_position_widgets)
         
         # 底部按鈕
         bottom_frame = ttk.Frame(main_frame)
-        bottom_frame.grid(row=7, column=0, columnspan=2, pady=10)
+        bottom_frame.grid(row=8, column=0, columnspan=2, pady=10)
         
         ttk.Button(bottom_frame, text="儲存設定", command=self.save_config).grid(row=0, column=0, padx=5)
         ttk.Button(bottom_frame, text="重新設定", command=self.reset_config).grid(row=0, column=1, padx=5)
-        ttk.Button(bottom_frame, text="取消點位設定", command=self.cancel_position_recording).grid(row=0, column=2, padx=5)
+        ttk.Button(bottom_frame, text="取消點擊設定", command=self.cancel_position_recording).grid(row=0, column=2, padx=5)
         
         self.update_position_labels()
         self.update_area_labels()
         self.update_stage_labels()
+        # self.update_crash_labels()
     
     def create_collapsible_section(self, parent, section_id, title, row, content_creator):
         """創建可收合的區塊"""
@@ -204,6 +220,22 @@ class GameMonitor:
     
     def create_stage_widgets(self, parent):
         """創建階段設定組件"""
+        # 相似度閾值設定
+        similarity_frame = tk.Frame(parent)
+        similarity_frame.grid(row=0, column=0, columnspan=6, sticky=(tk.W, tk.E), padx=5, pady=5)
+        
+        ttk.Label(similarity_frame, text="畫面相似度閾值:").grid(row=0, column=0, sticky=tk.W)
+        self.stage_similarity_entry = ttk.Entry(similarity_frame, width=10)
+        self.stage_similarity_entry.grid(row=0, column=1, padx=5)
+        # 如果設定中沒有這個值，使用預設值80%
+        similarity_threshold = self.config.get("stage_similarity_threshold", 80)
+        self.stage_similarity_entry.insert(0, str(similarity_threshold))
+        
+        # 說明標籤
+        similarity_help = ttk.Label(similarity_frame, text="(0-100%, 值越高越嚴格)", font=('Arial', 8), foreground="gray")
+        similarity_help.grid(row=0, column=2, sticky=tk.W, padx=5)
+        
+        # 階段按鈕區域
         self.stage_labels = {}
         self.stage_buttons = {}
         self.stage_thumbnails = {}
@@ -216,7 +248,7 @@ class GameMonitor:
         ]
         
         for i, (stage_key, stage_name) in enumerate(stages):
-            row = i // 2
+            row = (i // 2) + 1  # 從第1行開始，第0行是閾值設定
             col = i % 2
             base_col = col * 3
             
@@ -232,6 +264,63 @@ class GameMonitor:
             # 狀態標籤
             self.stage_labels[stage_key] = ttk.Label(parent, text="未設定", foreground="red")
             self.stage_labels[stage_key].grid(row=row, column=base_col+2, sticky=tk.W, padx=5, pady=2)
+    
+    def create_crash_widgets(self, parent):
+        """創建當機檢測設定組件"""
+        # 相似度閾值設定
+        similarity_frame = tk.Frame(parent)
+        similarity_frame.grid(row=0, column=0, columnspan=6, sticky=(tk.W, tk.E), padx=5, pady=5)
+        
+        ttk.Label(similarity_frame, text="當機畫面相似度閾值:").grid(row=0, column=0, sticky=tk.W)
+        self.crash_similarity_entry = ttk.Entry(similarity_frame, width=10)
+        self.crash_similarity_entry.grid(row=0, column=1, padx=5)
+        # 如果設定中沒有這個值，使用預設值85%
+        crash_similarity_threshold = self.config.get("crash_similarity_threshold", 85)
+        self.crash_similarity_entry.insert(0, str(crash_similarity_threshold))
+        
+        # 說明標籤
+        similarity_help = ttk.Label(similarity_frame, text="(0-100%, 值越高越嚴格)", font=('Arial', 8), foreground="gray")
+        similarity_help.grid(row=0, column=2, sticky=tk.W, padx=5)
+        
+        # 當機檢測開關
+        check_frame = tk.Frame(similarity_frame)
+        check_frame.grid(row=0, column=3, padx=10)
+        
+        self.crash_detection_var = tk.BooleanVar()
+        crash_detection_enabled = self.config.get("crash_detection_enabled", True)
+        self.crash_detection_var.set(crash_detection_enabled)
+        
+        crash_check = ttk.Checkbutton(check_frame, text="啟用當機檢測", 
+                                     variable=self.crash_detection_var)
+        crash_check.grid(row=0, column=0)
+        
+        # 當機畫面設定按鈕區域
+        self.crash_labels = {}
+        self.crash_buttons = {}
+        crash_types = [
+            ("disconnect", "斷線重連畫面"),
+            ("error", "錯誤/異常畫面"),
+            ("maintenance", "維護/更新畫面"),
+            ("timeout", "連線逾時畫面")
+        ]
+        
+        for i, (crash_key, crash_name) in enumerate(crash_types):
+            row = (i // 2) + 1  # 從第1行開始，第0行是閾值設定
+            col = i % 2
+            base_col = col * 3
+            
+            # 當機類型標籤
+            crash_label = ttk.Label(parent, text=f"{crash_name}:")
+            crash_label.grid(row=row, column=base_col, sticky=tk.W, padx=5, pady=2)
+            
+            # 設定按鈕或縮圖
+            self.crash_buttons[crash_key] = ttk.Button(parent, text="設定", 
+                                                     command=lambda k=crash_key: self.set_crash_screenshot(k))
+            self.crash_buttons[crash_key].grid(row=row, column=base_col+1, padx=5, pady=2)
+            
+            # 狀態標籤
+            self.crash_labels[crash_key] = ttk.Label(parent, text="未設定", foreground="red")
+            self.crash_labels[crash_key].grid(row=row, column=base_col+2, sticky=tk.W, padx=5, pady=2)
     
     def create_color_widgets(self, parent):
         """創建BOSS訊息判斷設定組件"""
@@ -257,8 +346,8 @@ class GameMonitor:
         self.realtime_color_preview.grid(row=0, column=3, padx=5)
         
         # 標籤說明
-        tk.Label(parent, text="設定顏色:", font=('Arial', 8)).grid(row=5, column=0, sticky=tk.W)
-        tk.Label(parent, text="滑鼠顏色:", font=('Arial', 8)).grid(row=5, column=1, sticky=tk.W)
+        tk.Label(parent, text="設定顏色:", font=('Arial', 8)).grid(row=6, column=0, sticky=tk.W)
+        tk.Label(parent, text="滑鼠顏色:", font=('Arial', 8)).grid(row=6, column=1, sticky=tk.W)
         
         # 啟動即時顏色更新
         self.start_realtime_preview()
@@ -284,10 +373,39 @@ class GameMonitor:
         self.boss_test_btn = ttk.Button(parent, text="測試BOSS檢測", command=self.test_boss_detection)
         self.boss_test_btn.grid(row=3, column=0, columnspan=2, pady=5)
         
+        # BOSS檢測延遲設定
+        ttk.Label(parent, text="無BOSS切換延遲:").grid(row=4, column=0, sticky=tk.W)
+        self.boss_wait_entry = ttk.Entry(parent, width=10)
+        self.boss_wait_entry.grid(row=4, column=1, padx=5)
+        # 如果設定中沒有這個值，使用預設值30秒
+        boss_wait_time = self.config.get("boss_wait_time", 30)
+        self.boss_wait_entry.insert(0, str(boss_wait_time))
+        
+        # 延遲說明標籤
+        wait_help = ttk.Label(parent, text="(秒，無BOSS時多久後切換頻道)", font=('Arial', 8), foreground="gray")
+        wait_help.grid(row=4, column=2, sticky=tk.W, padx=5)
+        
+        # BOSS後行為設定
+        ttk.Label(parent, text="檢測到BOSS後:").grid(row=5, column=0, sticky=tk.W)
+        self.boss_behavior_var = tk.BooleanVar()
+        auto_switch_after_boss = self.config.get("auto_channel_switch_after_boss", True)
+        self.boss_behavior_var.set(auto_switch_after_boss)
+        
+        behavior_frame = tk.Frame(parent)
+        behavior_frame.grid(row=5, column=1, columnspan=2, sticky=tk.W, padx=5)
+        
+        auto_radio = ttk.Radiobutton(behavior_frame, text="5秒後自動切換頻道", 
+                                   variable=self.boss_behavior_var, value=True)
+        auto_radio.grid(row=0, column=0, sticky=tk.W)
+        
+        manual_radio = ttk.Radiobutton(behavior_frame, text="暫停等待手動繼續", 
+                                     variable=self.boss_behavior_var, value=False)
+        manual_radio.grid(row=1, column=0, sticky=tk.W)
+        
         # 顏色資訊顯示
-        ttk.Label(parent, text="RGB值:").grid(row=4, column=0, sticky=tk.W)
+        ttk.Label(parent, text="RGB值:").grid(row=6, column=0, sticky=tk.W)
         self.rgb_label = ttk.Label(parent, text=f"({self.config['target_color'][0]}, {self.config['target_color'][1]}, {self.config['target_color'][2]})")
-        self.rgb_label.grid(row=4, column=1, sticky=tk.W, padx=5)
+        self.rgb_label.grid(row=6, column=1, sticky=tk.W, padx=5)
     
     def create_position_widgets(self, parent):
         """創建點位設定組件"""
@@ -509,6 +627,171 @@ class GameMonitor:
             print(f"創建階段 {stage_key} 縮圖失敗: {e}")
             # 失敗時顯示文字
             self.stage_buttons[stage_key].config(text="已設定", command=lambda k=stage_key: self.set_stage_screenshot(k))
+    
+    def update_crash_labels(self):
+        """更新當機檢測標籤顯示"""
+        for crash_key, label in self.crash_labels.items():
+            if crash_key in self.crash_screenshots:
+                label.config(text="已設定", foreground="green")
+                # 更新按鈕為縮圖
+                self.create_crash_thumbnail(crash_key)
+            else:
+                label.config(text="未設定", foreground="red")
+                # 恢復為設定按鈕
+                if crash_key in self.crash_buttons:
+                    self.crash_buttons[crash_key].config(text="設定", command=lambda k=crash_key: self.set_crash_screenshot(k))
+    
+    def create_crash_thumbnail(self, crash_key):
+        """創建當機檢測縮圖按鈕"""
+        if crash_key not in self.crash_screenshots:
+            return
+        
+        try:
+            # 取得截圖並縮小
+            screenshot = self.crash_screenshots[crash_key]
+            
+            # 縮放圖片為縮圖大小
+            thumbnail_size = (60, 40)
+            h, w = screenshot.shape[:2]
+            
+            # 計算縮放比例
+            scale = min(thumbnail_size[0]/w, thumbnail_size[1]/h)
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            
+            # 縮放圖片
+            resized_img = cv2.resize(screenshot, (new_w, new_h))
+            
+            # 轉換為PhotoImage
+            pil_img = Image.fromarray(resized_img)
+            photo = ImageTk.PhotoImage(pil_img)
+            
+            # 更新按鈕顯示縮圖
+            button = self.crash_buttons[crash_key]
+            button.config(text="", image=photo, command=lambda k=crash_key: self.set_crash_screenshot(k))
+            
+            # 綁定右鍵點擊事件
+            button.bind("<Button-3>", lambda event, k=crash_key: self.show_crash_preview(k))
+            
+            # 保持引用避免被回收
+            if not hasattr(self, 'crash_photos'):
+                self.crash_photos = {}
+            self.crash_photos[crash_key] = photo
+            
+        except Exception as e:
+            print(f"創建當機檢測 {crash_key} 縮圖失敗: {e}")
+            # 失敗時顯示文字
+            self.crash_buttons[crash_key].config(text="已設定", command=lambda k=crash_key: self.set_crash_screenshot(k))
+    
+    def set_crash_screenshot(self, crash_key):
+        """設定當機檢測截圖"""
+        if self.is_running:
+            messagebox.showerror("錯誤", "請先停止監控模式")
+            return
+        
+        crash_names = {
+            "disconnect": "斷線重連畫面",
+            "error": "錯誤/異常畫面", 
+            "maintenance": "維護/更新畫面",
+            "timeout": "連線逾時畫面"
+        }
+        
+        crash_name = crash_names.get(crash_key, f"當機類型 {crash_key}")
+        
+        result = messagebox.askyesno("設定當機檢測截圖", 
+            f"即將設定 {crash_name} 的參考截圖\n\n"
+            f"請確保當前畫面顯示的是 {crash_name}\n"
+            f"點擊「是」開始截取畫面")
+        
+        if result:
+            self.setting_crash = crash_key
+            self.capture_crash_screenshot()
+    
+    def capture_crash_screenshot(self):
+        """擷取當機檢測畫面截圖"""
+        try:
+            # 隱藏主視窗避免干擾
+            self.root.withdraw()
+            time.sleep(0.5)  # 等待視窗隱藏
+            
+            # 截取全螢幕
+            screenshot = pyautogui.screenshot()
+            
+            # 轉換為OpenCV格式
+            screenshot_cv = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+            
+            # 儲存截圖
+            self.crash_screenshots[self.setting_crash] = screenshot_cv
+            
+            # 顯示主視窗
+            self.root.deiconify()
+            
+            crash_names = {
+                "disconnect": "斷線重連畫面",
+                "error": "錯誤/異常畫面",
+                "maintenance": "維護/更新畫面", 
+                "timeout": "連線逾時畫面"
+            }
+            
+            crash_name = crash_names.get(self.setting_crash, f"當機類型 {self.setting_crash}")
+            
+            # 更新UI
+            self.update_crash_labels()
+            
+            messagebox.showinfo("截圖完成", f"{crash_name} 截圖已設定完成！")
+            
+            # 重置設定狀態
+            self.setting_crash = None
+            
+        except Exception as e:
+            # 確保主視窗顯示
+            self.root.deiconify()
+            messagebox.showerror("錯誤", f"截圖失敗: {str(e)}")
+            self.setting_crash = None
+    
+    def show_crash_preview(self, crash_key):
+        """顯示當機檢測截圖預覽"""
+        if crash_key not in self.crash_screenshots:
+            return
+        
+        try:
+            # 創建預覽視窗
+            preview_window = tk.Toplevel(self.root)
+            preview_window.title(f"當機檢測預覽 - {crash_key}")
+            preview_window.attributes('-topmost', True)
+            
+            # 取得截圖
+            screenshot = self.crash_screenshots[crash_key]
+            
+            # 計算適當的顯示大小（最大800x600）
+            h, w = screenshot.shape[:2]
+            max_w, max_h = 800, 600
+            
+            if w > max_w or h > max_h:
+                scale = min(max_w/w, max_h/h)
+                new_w = int(w * scale)
+                new_h = int(h * scale)
+                resized_img = cv2.resize(screenshot, (new_w, new_h))
+            else:
+                resized_img = screenshot
+            
+            # 轉換為PhotoImage
+            pil_img = Image.fromarray(resized_img)
+            photo = ImageTk.PhotoImage(pil_img)
+            
+            # 顯示圖片
+            label = ttk.Label(preview_window, image=photo)
+            label.pack(padx=10, pady=10)
+            
+            # 保持引用
+            label.image = photo
+            
+            # 關閉按鈕
+            close_btn = ttk.Button(preview_window, text="關閉", command=preview_window.destroy)
+            close_btn.pack(pady=5)
+            
+        except Exception as e:
+            messagebox.showerror("錯誤", f"無法顯示預覽: {str(e)}")
     
     def set_detection_area(self):
         """設定王怪檢測區域"""
@@ -761,43 +1044,63 @@ class GameMonitor:
         self.boss_test_active = True
         self.boss_test_btn.config(text="測試中...", state="disabled")
         
-        messagebox.showinfo("開始測試", "將在10秒內檢測BOSS訊息\n請確保遊戲畫面可見")
+        messagebox.showinfo("開始測試", "將在5秒內檢測王怪區域是否符合BOSS設定\n請確保遊戲畫面可見")
         
         # 啟動測試執行緒
         self.boss_test_thread = threading.Thread(target=self.run_boss_test, daemon=True)
         self.boss_test_thread.start()
     
     def run_boss_test(self):
-        """執行BOSS檢測測試"""
-        test_duration = 10  # 測試10秒
-        check_interval = 0.5  # 每0.5秒檢測一次
+        """執行BOSS檢測測試 - 5秒內檢測王怪區域"""
+        test_duration = 5  # 測試5秒
+        check_interval = 0.2  # 每0.2秒檢測一次
         start_time = time.time()
         boss_detected = False
+        detection_time = None
         
         try:
-            while time.time() - start_time < test_duration and self.boss_test_active:
-                # 執行BOSS檢測
-                if self.detect_boss():
-                    boss_detected = True
+            # 更新狀態顯示
+            for i in range(5, 0, -1):
+                if not self.boss_test_active:
                     break
+                    
+                self.root.after(0, lambda seconds=i: self.update_test_status(f"測試中... 剩餘 {seconds} 秒"))
                 
-                time.sleep(check_interval)
+                # 在這1秒內檢測5次
+                for j in range(5):
+                    if not self.boss_test_active:
+                        break
+                        
+                    # 執行BOSS檢測
+                    if self.detect_boss():
+                        boss_detected = True
+                        detection_time = time.time() - start_time
+                        break
+                    
+                    time.sleep(0.2)
+                
+                if boss_detected:
+                    break
             
             # 更新UI必須在主執行緒中
             if boss_detected:
-                self.root.after(0, lambda: self.show_test_result(True))
+                self.root.after(0, lambda: self.show_test_result(True, detection_time))
             else:
                 self.root.after(0, lambda: self.show_test_result(False))
                 
         except Exception as e:
             print(f"測試過程發生錯誤: {e}")
-            self.root.after(0, lambda: self.show_test_result(False, str(e)))
+            self.root.after(0, lambda: self.show_test_result(False, error_msg=str(e)))
         
         # 重置測試狀態
         self.boss_test_active = False
         self.root.after(0, self.reset_boss_test_button)
     
-    def show_test_result(self, detected, error_msg=None):
+    def update_test_status(self, status_text):
+        """更新測試狀態顯示"""
+        self.boss_test_btn.config(text=status_text)
+    
+    def show_test_result(self, detected, detection_time=None, error_msg=None):
         """顯示測試結果"""
         if error_msg:
             messagebox.showerror("測試錯誤", f"測試過程發生錯誤:\n{error_msg}")
@@ -805,23 +1108,28 @@ class GameMonitor:
             # 取得當前設定值顯示
             timestamp = datetime.now().strftime("%H:%M:%S")
             result_msg = f"✅ 偵測到BOSS！\n\n"
-            result_msg += f"時間: {timestamp}\n"
-            result_msg += f"目標顏色: RGB{self.config['target_color']}\n"
-            result_msg += f"顏色容差: {self.config['color_tolerance']}\n"
-            result_msg += f"像素閾值: {self.config['color_threshold']}"
-            
-            messagebox.showinfo("測試結果", result_msg)
-        else:
-            result_msg = f"❌ 未偵測到BOSS\n\n"
-            result_msg += f"測試時間: 10秒\n"
+            result_msg += f"檢測時間: {timestamp}\n"
+            if detection_time:
+                result_msg += f"偵測用時: {detection_time:.1f} 秒\n"
             result_msg += f"目標顏色: RGB{self.config['target_color']}\n"
             result_msg += f"顏色容差: {self.config['color_tolerance']}\n"
             result_msg += f"像素閾值: {self.config['color_threshold']}\n\n"
-            result_msg += "建議:\n"
-            result_msg += "• 檢查目標顏色是否正確\n"
-            result_msg += "• 調整顏色容差 (增加容差值)\n"
-            result_msg += "• 降低像素閾值\n"
-            result_msg += "• 確認檢測區域設定正確"
+            result_msg += "✓ 當前設定可以成功檢測到BOSS訊息"
+            
+            messagebox.showinfo("測試結果", result_msg)
+        else:
+            result_msg = f"❌ 5秒內未偵測到BOSS\n\n"
+            result_msg += f"測試時間: 5秒 (完整測試)\n"
+            result_msg += f"目標顏色: RGB{self.config['target_color']}\n"
+            result_msg += f"顏色容差: {self.config['color_tolerance']}\n"
+            result_msg += f"像素閾值: {self.config['color_threshold']}\n"
+            result_msg += f"檢測區域: {self.config['detection_area']}\n\n"
+            result_msg += "建議調整:\n"
+            result_msg += "• 檢查目標顏色是否正確 (使用滴管取色)\n"
+            result_msg += "• 增加顏色容差值 (建議50-100)\n"
+            result_msg += "• 降低像素閾值 (建議50-200)\n"
+            result_msg += "• 確認王怪檢測區域包含BOSS訊息\n"
+            result_msg += "• 確保測試時遊戲畫面中有BOSS訊息"
             
             messagebox.showwarning("測試結果", result_msg)
     
@@ -874,6 +1182,10 @@ class GameMonitor:
             self.current_stage = "啟動中"
             self.update_status()
             
+            # 重置BOSS檢測計時器
+            if hasattr(self, 'boss_check_start_time'):
+                delattr(self, 'boss_check_start_time')
+            
             # 開始監控執行緒
             self.monitoring_thread = threading.Thread(target=self.monitoring_loop, daemon=True)
             self.monitoring_thread.start()
@@ -922,8 +1234,9 @@ class GameMonitor:
         """主要監控循環"""
         self.config["telegram_chat_id"] = self.chat_id_entry.get().strip()
         self.config["color_threshold"] = int(self.threshold_entry.get())
+        self.config["auto_channel_switch_after_boss"] = self.boss_behavior_var.get()
         
-        stage = "C"  # 從階段C開始（登入畫面）
+        stage = "A"  # 從階段A開始（頻道切換成功確認）
         
         while self.is_running:
             if self.is_paused:
@@ -942,116 +1255,322 @@ class GameMonitor:
                 elif stage == "F":
                     stage = self.stage_f()
                 
-                time.sleep(1)  # 基本延遲
+                time.sleep(0.5)  # 縮短基本延遲，提高響應速度
             except Exception as e:
                 print(f"監控循環錯誤: {e}")
+                self.current_stage = f"階段{stage}: 發生錯誤 - {str(e)}"
+                self.update_status()
                 time.sleep(1)
     
     def stage_a(self):
         """階段A: 頻道切換成功確認"""
-        self.current_stage = "階段A: 頻道切換成功確認"
+        self.current_stage = "階段A: 檢查是否為頻道切換成功畫面"
         self.update_status()
         
         # 檢查是否有階段A的截圖設定
         if "A" in self.stage_screenshots:
             # 檢測當前畫面是否匹配階段A
             if self.detect_stage_match("A"):
-                # 匹配成功，進入下一階段
+                self.current_stage = "階段A: ✓ 匹配頻道切換成功畫面"
+                self.update_status()
+                time.sleep(1)
                 return "C"
+            else:
+                self.current_stage = "階段A: ✗ 不匹配頻道切換成功畫面，繼續檢查"
+                self.update_status()
+        else:
+            self.current_stage = "階段A: 未設定參考畫面，跳過檢查"
+            self.update_status()
         
-        # 沒有設定或不匹配，直接進入登入階段
+        # 沒有匹配，等待一段時間後重新檢查
+        time.sleep(2)
+        return "A"  # 繼續停留在階段A檢查
+    
+    def stage_c(self):
+        """階段C: 等待登入畫面出現"""
+        # 檢查是否有階段C的截圖設定
+        if "C" in self.stage_screenshots:
+            # 檢測當前畫面是否匹配階段C（登入畫面）
+            if self.detect_stage_match("C"):
+                self.current_stage = "階段C: ✓ 檢測到登入畫面，執行登入點擊"
+                self.update_status()
+                
+                # 確認是登入畫面，執行登入點擊
+                login_pos = self.config["click_positions"]["login"]
+                if login_pos:
+                    pyautogui.click(login_pos[0], login_pos[1])
+                    time.sleep(2)
+                    return "D"  # 進入階段D等待角色選擇畫面
+                else:
+                    self.current_stage = "階段C: 未設定登入按鈕位置"
+                    self.update_status()
+                    time.sleep(2)
+                    return "C"
+            else:
+                self.current_stage = "階段C: 等待登入畫面出現"
+                self.update_status()
+        else:
+            # 沒有設定截圖，假設已經是登入畫面，直接點擊登入
+            self.current_stage = "階段C: 未設定參考畫面，執行登入點擊"
+            self.update_status()
+            
+            login_pos = self.config["click_positions"]["login"]
+            if login_pos:
+                pyautogui.click(login_pos[0], login_pos[1])
+                time.sleep(2)
+                return "D"
+        
+        # 等待登入畫面出現
         time.sleep(1)
         return "C"
     
-    def stage_c(self):
-        """階段C: 登入畫面"""
-        self.current_stage = "階段C: 登入畫面"
-        self.update_status()
-        
-        login_pos = self.config["click_positions"]["login"]
-        if login_pos:
-            pyautogui.click(login_pos[0], login_pos[1])
-            time.sleep(2)
-        
-        return "D"
-    
     def stage_d(self):
-        """階段D: 選擇角色畫面"""
-        self.current_stage = "階段D: 角色選擇"
-        self.update_status()
+        """階段D: 等待角色選擇畫面出現"""
+        # 檢查是否有階段D的截圖設定
+        if "D" in self.stage_screenshots:
+            # 檢測當前畫面是否匹配階段D（角色選擇畫面）
+            if self.detect_stage_match("D"):
+                self.current_stage = "階段D: ✓ 檢測到角色選擇畫面，執行角色點擊"
+                self.update_status()
+                
+                # 確認是角色選擇畫面，執行角色點擊
+                char_pos = self.config["click_positions"]["character"]
+                if char_pos:
+                    pyautogui.click(char_pos[0], char_pos[1])
+                    time.sleep(2)
+                    return "E"  # 進入階段E進行BOSS檢測
+                else:
+                    self.current_stage = "階段D: 未設定角色選擇按鈕位置"
+                    self.update_status()
+                    time.sleep(2)
+                    return "D"
+            else:
+                # 檢查是否還在上個階段（階段C）
+                if "C" in self.stage_screenshots and self.detect_stage_match("C"):
+                    self.current_stage = "階段D: 檢測到仍在登入畫面，執行登入點擊"
+                    self.update_status()
+                    
+                    # 還在登入畫面，執行登入點擊
+                    login_pos = self.config["click_positions"]["login"]
+                    if login_pos:
+                        pyautogui.click(login_pos[0], login_pos[1])
+                        time.sleep(2)
+                    return "D"  # 繼續等待角色選擇畫面
+                else:
+                    self.current_stage = "階段D: 等待角色選擇畫面出現"
+                    self.update_status()
+        else:
+            # 沒有設定截圖，假設已經是角色選擇畫面，直接點擊角色
+            self.current_stage = "階段D: 未設定參考畫面，執行角色點擊"
+            self.update_status()
+            
+            char_pos = self.config["click_positions"]["character"]
+            if char_pos:
+                pyautogui.click(char_pos[0], char_pos[1])
+                time.sleep(2)
+                return "E"
         
-        char_pos = self.config["click_positions"]["character"]
-        if char_pos:
-            pyautogui.click(char_pos[0], char_pos[1])
-            time.sleep(2)
-        
-        return "E"
+        # 等待角色選擇畫面出現
+        time.sleep(1)
+        return "D"
     
     def stage_e(self):
         """階段E: 遊戲內王怪檢測"""
-        self.current_stage = "階段E: 王怪檢測中"
-        self.update_status()
-        
-        # 檢測王怪
-        if self.detect_boss():
-            # 發送通知並暫停
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            message = f"BOSS出現！\n時間: {timestamp}"
-            
-            self.send_telegram_message(self.config["telegram_chat_id"], message)
-            
-            # 自動暫停，等待使用者繼續
-            self.is_paused = True
-            self.pause_continue_btn.config(text="繼續", style="Accent.TButton")  # 突出樣式
-            self.current_stage = "檢測到BOSS - 請打完後點繼續"
+        # 檢查是否有階段E的截圖設定
+        if "E" in self.stage_screenshots:
+            # 檢測當前畫面是否匹配階段E（遊戲內畫面）
+            if self.detect_stage_match("E"):
+                self.current_stage = "階段E: ✓ 檢測到遊戲內畫面，開始BOSS檢測"
+                self.update_status()
+                
+                # 確認在遊戲內，進行BOSS檢測
+                if self.detect_boss():
+                    # 重置計時器 (檢測到BOSS後重新開始計時)
+                    if hasattr(self, 'boss_check_start_time'):
+                        delattr(self, 'boss_check_start_time')
+                    
+                    # 發送通知
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    message = f"BOSS出現！\n時間: {timestamp}"
+                    
+                    self.send_telegram_message(self.config["telegram_chat_id"], message)
+                    
+                    # 檢查是否要自動進入頻道切換
+                    auto_switch = self.config.get("auto_channel_switch_after_boss", True)
+                    
+                    if auto_switch:
+                        # 立即進入頻道切換
+                        self.current_stage = "檢測到BOSS！立即切換頻道..."
+                        self.update_status()
+                        print("階段E: 檢測到BOSS，立即進入階段F")
+                        
+                        return "F"  # 立即進入頻道切換
+                    else:
+                        # 手動模式：暫停等待使用者點繼續
+                        self.is_paused = True
+                        self.pause_continue_btn.config(text="繼續", style="Accent.TButton")
+                        self.current_stage = "檢測到BOSS - 請打完後點繼續"
+                        self.update_status()
+                        
+                        # 等待使用者點繼續
+                        while self.is_paused and self.is_running:
+                            time.sleep(0.1)
+                        
+                        self.pause_continue_btn.config(style="TButton")
+                        return "F"
+                
+                # 沒有檢測到BOSS，檢查是否達到等待時間
+                if not hasattr(self, 'boss_check_start_time'):
+                    self.boss_check_start_time = time.time()
+                
+                elapsed_time = time.time() - self.boss_check_start_time
+                wait_time = self.config.get("boss_wait_time", 30)
+                
+                remaining_time = max(0, int(wait_time - elapsed_time))
+                self.current_stage = f"階段E: BOSS檢測中 ({remaining_time}秒後切換頻道)"
+                self.update_status()
+                
+                if elapsed_time >= wait_time:
+                    # 重置計時器，準備下一輪檢測
+                    self.boss_check_start_time = time.time()
+                    return "F"  # 進入頻道切換
+            else:
+                # 檢查是否還在上個階段（階段D）
+                if "D" in self.stage_screenshots and self.detect_stage_match("D"):
+                    self.current_stage = "階段E: 檢測到仍在角色選擇畫面，執行角色點擊"
+                    self.update_status()
+                    
+                    # 還在角色選擇畫面，執行角色點擊
+                    char_pos = self.config["click_positions"]["character"]
+                    if char_pos:
+                        pyautogui.click(char_pos[0], char_pos[1])
+                        time.sleep(2)
+                    return "E"  # 繼續等待進入遊戲
+                else:
+                    self.current_stage = "階段E: 等待進入遊戲內畫面"
+                    self.update_status()
+        else:
+            # 沒有設定截圖，直接進行BOSS檢測
+            self.current_stage = "階段E: 未設定參考畫面，直接進行BOSS檢測"
             self.update_status()
             
-            # 等待使用者點繼續
-            while self.is_paused and self.is_running:
-                time.sleep(0.1)
+            # 進行BOSS檢測
+            if self.detect_boss():
+                # 重置計時器
+                if hasattr(self, 'boss_check_start_time'):
+                    delattr(self, 'boss_check_start_time')
+                
+                # 發送通知並暫停
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                message = f"BOSS出現！\n時間: {timestamp}"
+                
+                self.send_telegram_message(self.config["telegram_chat_id"], message)
+                
+                # 自動暫停，等待使用者繼續
+                self.is_paused = True
+                self.pause_continue_btn.config(text="繼續", style="Accent.TButton")
+                self.current_stage = "檢測到BOSS - 請打完後點繼續"
+                self.update_status()
+                
+                # 等待使用者點繼續
+                while self.is_paused and self.is_running:
+                    time.sleep(0.1)
+                
+                self.pause_continue_btn.config(style="TButton")
+                return "F"
             
-            self.pause_continue_btn.config(style="TButton")  # 恢復一般樣式
-            return "F"
+            # 沒有檢測到BOSS，檢查是否達到等待時間
+            if not hasattr(self, 'boss_check_start_time'):
+                self.boss_check_start_time = time.time()
+            
+            elapsed_time = time.time() - self.boss_check_start_time
+            wait_time = self.config.get("boss_wait_time", 30)
+            
+            remaining_time = max(0, int(wait_time - elapsed_time))
+            self.current_stage = f"階段E: BOSS檢測中 ({remaining_time}秒後切換頻道)"
+            self.update_status()
+            
+            if elapsed_time >= wait_time:
+                self.boss_check_start_time = time.time()
+                return "F"
         
-        # 超時檢查
         time.sleep(1)
         return "E"  # 繼續檢測
     
     def stage_f(self):
         """階段F: 切換頻道"""
-        self.current_stage = "階段F: 切換頻道"
-        self.update_status()
-        
-        # 檢查是否已達到階段F的目標畫面
+        # 檢查是否有階段F的截圖設定
         if "F" in self.stage_screenshots:
+            # 檢測當前畫面是否匹配階段F（頻道切換目標畫面）
             if self.detect_stage_match("F"):
+                self.current_stage = "階段F: ✓ 檢測到頻道切換目標畫面，執行完成點擊"
+                self.update_status()
+                
                 # 已達到目標畫面，執行點位3和4
                 channel_positions = self.config["click_positions"]["channel"]
                 if len(channel_positions) >= 4:
                     # 點擊第3個點位
                     if channel_positions[2] and self.is_running and not self.is_paused:
+                        print(f"階段F: 點擊點位3 ({channel_positions[2][0]}, {channel_positions[2][1]})")
                         pyautogui.click(channel_positions[2][0], channel_positions[2][1])
                         time.sleep(1)
                     
                     # 點擊第4個點位
                     if channel_positions[3] and self.is_running and not self.is_paused:
+                        print(f"階段F: 點擊點位4 ({channel_positions[3][0]}, {channel_positions[3][1]})")
                         pyautogui.click(channel_positions[3][0], channel_positions[3][1])
                         time.sleep(1)
                 
-                return "A"  # 回到階段A確認切換成功
-        
-        # 還沒達到目標畫面，執行點位1和2
-        channel_positions = self.config["click_positions"]["channel"]
-        if len(channel_positions) >= 2:
-            # 點擊第1個點位
-            if channel_positions[0] and self.is_running and not self.is_paused:
-                pyautogui.click(channel_positions[0][0], channel_positions[0][1])
-                time.sleep(1)
+                # 頻道切換完成，重置BOSS檢測計時器
+                if hasattr(self, 'boss_check_start_time'):
+                    delattr(self, 'boss_check_start_time')
+                
+                return "E"  # 回到階段E繼續BOSS檢測
+            else:
+                # 檢查是否還在上個階段（階段E）
+                if "E" in self.stage_screenshots and self.detect_stage_match("E"):
+                    self.current_stage = "階段F: 檢測到仍在遊戲內畫面，等待進入頻道切換"
+                    self.update_status()
+                    # 還在遊戲內，等待進入頻道切換界面
+                    time.sleep(1)
+                    return "F"
+                else:
+                    # 還沒達到目標畫面，執行點位1和2
+                    self.current_stage = "階段F: 執行頻道切換點位1和2"
+                    self.update_status()
+                    
+                    channel_positions = self.config["click_positions"]["channel"]
+                    if len(channel_positions) >= 2:
+                        # 點擊第1個點位
+                        if channel_positions[0] and self.is_running and not self.is_paused:
+                            print(f"階段F: 點擊點位1 ({channel_positions[0][0]}, {channel_positions[0][1]})")
+                            pyautogui.click(channel_positions[0][0], channel_positions[0][1])
+                            time.sleep(1)
+                        
+                        # 點擊第2個點位
+                        if channel_positions[1] and self.is_running and not self.is_paused:
+                            print(f"階段F: 點擊點位2 ({channel_positions[1][0]}, {channel_positions[1][1]})")
+                            pyautogui.click(channel_positions[1][0], channel_positions[1][1])
+                            time.sleep(1)
+        else:
+            # 沒有設定截圖，執行完整的頻道切換流程
+            self.current_stage = "階段F: 未設定參考畫面，執行完整頻道切換"
+            self.update_status()
             
-            # 點擊第2個點位
-            if channel_positions[1] and self.is_running and not self.is_paused:
-                pyautogui.click(channel_positions[1][0], channel_positions[1][1])
-                time.sleep(1)
+            channel_positions = self.config["click_positions"]["channel"]
+            if len(channel_positions) >= 4:
+                # 依序點擊所有4個點位
+                for i, pos in enumerate(channel_positions):
+                    if pos and self.is_running and not self.is_paused:
+                        print(f"階段F: 點擊點位{i+1} ({pos[0]}, {pos[1]})")
+                        pyautogui.click(pos[0], pos[1])
+                        time.sleep(1)
+                
+                # 頻道切換完成，重置BOSS檢測計時器
+                if hasattr(self, 'boss_check_start_time'):
+                    delattr(self, 'boss_check_start_time')
+                
+                return "E"  # 回到階段E繼續BOSS檢測
         
         return "F"  # 繼續在階段F，直到檢測到目標畫面
     
@@ -1098,8 +1617,12 @@ class GameMonitor:
             # 計算相似度
             similarity = self.calculate_image_similarity(current_screenshot, target_screenshot)
             
-            # 相似度閾值，可以調整
-            threshold = 0.8  # 80%相似度
+            # 從設定中取得相似度閾值
+            threshold_percent = self.config.get("stage_similarity_threshold", 80)
+            threshold = threshold_percent / 100.0  # 轉換為0-1範圍
+            
+            # 除錯訊息
+            print(f"階段{stage_key}匹配檢測: 相似度{similarity:.3f}, 閾值{threshold:.3f}, 匹配:{similarity > threshold}")
             
             return similarity > threshold
         except Exception as e:
@@ -1141,9 +1664,14 @@ class GameMonitor:
         self.config["telegram_chat_id"] = self.chat_id_entry.get().strip()
         self.config["color_threshold"] = int(self.threshold_entry.get())
         self.config["color_tolerance"] = int(self.color_tolerance_entry.get())
+        self.config["boss_wait_time"] = int(self.boss_wait_entry.get())
+        self.config["stage_similarity_threshold"] = int(self.stage_similarity_entry.get())
         
         # 儲存階段截圖
         self.save_stage_screenshots()
+        
+        # 儲存當機檢測截圖
+        self.save_crash_screenshots()
         
         # 儲存UI狀態
         self.save_ui_state()
@@ -1171,6 +1699,24 @@ class GameMonitor:
             except Exception as e:
                 print(f"儲存階段 {stage_key} 截圖失敗: {e}")
     
+    def save_crash_screenshots(self):
+        """儲存當機檢測截圖到檔案"""
+        import os
+        
+        # 建立截圖資料夾
+        if not os.path.exists("crash_screenshots"):
+            os.makedirs("crash_screenshots")
+        
+        # 儲存每個當機類型的截圖
+        for crash_key, screenshot in self.crash_screenshots.items():
+            try:
+                # 轉換為PIL圖片並儲存
+                pil_img = Image.fromarray(screenshot)
+                pil_img.save(f"crash_screenshots/crash_{crash_key}.png")
+                print(f"已儲存當機檢測 {crash_key} 截圖")
+            except Exception as e:
+                print(f"儲存當機檢測 {crash_key} 截圖失敗: {e}")
+    
     def load_config(self):
         """載入設定"""
         try:
@@ -1181,6 +1727,9 @@ class GameMonitor:
             
             # 載入階段截圖
             self.load_stage_screenshots()
+            
+            # 載入當機檢測截圖
+            self.load_crash_screenshots()
         except Exception as e:
             print(f"載入設定失敗: {e}")
     
@@ -1203,6 +1752,26 @@ class GameMonitor:
                     print(f"已載入階段 {stage_key} 截圖")
                 except Exception as e:
                     print(f"載入階段 {stage_key} 截圖失敗: {e}")
+    
+    def load_crash_screenshots(self):
+        """載入當機檢測截圖"""
+        import os
+        
+        if not os.path.exists("crash_screenshots"):
+            return
+        
+        crash_types = ["disconnect", "error", "maintenance", "timeout"]
+        for crash_key in crash_types:
+            screenshot_path = f"crash_screenshots/crash_{crash_key}.png"
+            if os.path.exists(screenshot_path):
+                try:
+                    # 載入圖片並轉換為numpy陣列
+                    pil_img = Image.open(screenshot_path)
+                    screenshot = np.array(pil_img)
+                    self.crash_screenshots[crash_key] = screenshot
+                    print(f"已載入當機檢測 {crash_key} 截圖")
+                except Exception as e:
+                    print(f"載入當機檢測 {crash_key} 截圖失敗: {e}")
     
     def save_ui_state(self):
         """儲存UI狀態"""
@@ -1299,6 +1868,8 @@ class GameMonitor:
                 "color_threshold": 100,
                 "detection_timeout": 30,
                 "color_tolerance": 50,
+                "boss_wait_time": 30,
+                "stage_similarity_threshold": 80,
                 "click_positions": {
                     "login": None,
                     "character": None,
@@ -1310,6 +1881,10 @@ class GameMonitor:
             self.threshold_entry.insert(0, "100")
             self.color_tolerance_entry.delete(0, tk.END)
             self.color_tolerance_entry.insert(0, "50")
+            self.boss_wait_entry.delete(0, tk.END)
+            self.boss_wait_entry.insert(0, "30")
+            self.stage_similarity_entry.delete(0, tk.END)
+            self.stage_similarity_entry.insert(0, "80")
             self.stage_screenshots = {}
             
             # 刪除階段截圖檔案
@@ -1709,6 +2284,64 @@ class GameMonitor:
     def run(self):
         """啟動應用程式"""
         self.root.mainloop()
+
+    def load_window_geometry(self):
+        """載入視窗位置和大小"""
+        try:
+            # 從設定中載入視窗幾何
+            geometry = self.config.get("window_geometry", "800x600+100+100")
+            self.root.geometry(geometry)
+            print(f"載入視窗位置: {geometry}")
+        except Exception as e:
+            print(f"載入視窗位置失敗: {e}")
+            # 使用預設值
+            self.root.geometry("800x600+100+100")
+    
+    def save_window_geometry(self):
+        """儲存當前視窗位置和大小"""
+        try:
+            # 取得當前視窗幾何
+            geometry = self.root.geometry()
+            self.config["window_geometry"] = geometry
+            print(f"儲存視窗位置: {geometry}")
+        except Exception as e:
+            print(f"儲存視窗位置失敗: {e}")
+    
+    def on_closing(self):
+        """視窗關閉事件處理"""
+        try:
+            # 停止所有運行中的執行緒
+            if self.is_running:
+                self.is_running = False
+                self.is_paused = False
+            
+            # 儲存視窗位置
+            self.save_window_geometry()
+            
+            # 儲存設定
+            self.save_config()
+            
+            # 停止滑鼠監聽器
+            if hasattr(self, 'mouse_listener'):
+                try:
+                    self.mouse_listener.stop()
+                except:
+                    pass
+            
+            # 停止滴管取色監聽器
+            if hasattr(self, 'eyedropper_mouse_listener'):
+                try:
+                    self.eyedropper_mouse_listener.stop()
+                except:
+                    pass
+            
+            print("程式正常關閉")
+            
+        except Exception as e:
+            print(f"關閉程式時發生錯誤: {e}")
+        finally:
+            # 銷毀視窗
+            self.root.destroy()
 
 if __name__ == "__main__":
     app = GameMonitor()
