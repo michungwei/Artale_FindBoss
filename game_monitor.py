@@ -1582,8 +1582,56 @@ class GameMonitor:
         return "E"  # 繼續檢測
     
     def stage_f(self):
-        """階段F: 切換頻道"""
-        # 檢查是否有階段F的截圖設定
+        """階段F: 立即執行頻道切換，不等待任何條件"""
+        print("階段F: 開始執行頻道切換")
+        self.current_stage = "階段F: 執行頻道切換..."
+        self.update_status()
+        
+        # 直接執行頻道切換，不進行任何畫面檢測
+        channel_positions = self.config["click_positions"]["channel"]
+        
+        # 檢查頻道切換點位是否已設定
+        if not channel_positions or len(channel_positions) < 4:
+            self.current_stage = "階段F: 未設定頻道切換點位，需要設定4個點位"
+            self.update_status()
+            time.sleep(2)
+            return "F"
+        
+        # 檢查前4個點位是否都已設定
+        if not all(channel_positions[i] for i in range(4)):
+            self.current_stage = "階段F: 頻道切換點位不完整，請確認已設定點位1-4"
+            self.update_status()
+            time.sleep(2)
+            return "F"
+        
+        # 立即執行所有4個點位的點擊
+        self.current_stage = "階段F: 立即執行4個點位點擊"
+        self.update_status()
+        
+        try:
+            # 依序執行所有點位
+            for i in range(4):
+                if channel_positions[i] and self.is_running and not self.is_paused:
+                    print(f"階段F: 點擊點位{i+1} ({channel_positions[i][0]}, {channel_positions[i][1]})")
+                    pyautogui.click(channel_positions[i][0], channel_positions[i][1])
+                    time.sleep(1)
+            
+            # 頻道切換完成，重置BOSS檢測計時器
+            if hasattr(self, 'boss_check_start_time'):
+                delattr(self, 'boss_check_start_time')
+            
+            self.current_stage = "階段F: 頻道切換完成"
+            self.update_status()
+            print("階段F: 所有點位點擊完成，返回階段A")
+            time.sleep(2)
+            return "A"  # 回到階段A檢查頻道切換結果
+            
+        except Exception as e:
+            print(f"階段F點擊錯誤: {e}")
+            self.current_stage = f"階段F: 點擊錯誤 - {str(e)}"
+            self.update_status()
+            time.sleep(2)
+            return "F"
         if "F" in self.stage_screenshots:
             # 檢測當前畫面是否匹配階段F（頻道切換目標畫面）
             if self.detect_stage_match("F"):
