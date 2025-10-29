@@ -18,7 +18,489 @@ import cv2
 import numpy as np
 import keyboard
 import mss
+import urllib.parse
 import os
+import json
+
+class TelegramBot:
+    """Telegram Bot指令處理器"""
+    
+    def __init__(self, game_monitor):
+        self.game_monitor = game_monitor
+        self.bot_token = game_monitor.config.get("telegram_bot_token", "")
+        self.chat_id = game_monitor.config.get("telegram_chat_id", "")
+        self.update_offset = 0
+        self.is_listening = False
+        self.listener_thread = None
+        
+        # 指令處理映射
+        self.commands = {
+            '/menu': self.handle_menu,
+            '/status': self.handle_status,
+            '/pause': self.handle_pause,
+            '/resume': self.handle_resume,
+            '/stop': self.handle_stop,
+            '/screenshot': self.handle_screenshot
+        }
+    
+    def start_listener(self):
+        """啟動Telegram指令監聽"""
+        if not self.bot_token or not self.chat_id:
+            print("❌ Telegram Bot Token或Chat ID未設定，跳過Bot功能")
+            return False
+        
+        self.is_listening = True
+        self.listener_thread = threading.Thread(target=self.listen_for_commands, daemon=True)
+        self.listener_thread.start()
+        
+        # 設定Bot指令選單（固定在聊天欄）
+        self.set_bot_commands()
+        
+        # 發送歡迎訊息
+        if self.game_monitor.config.get("send_welcome_message", True):
+            self.send_welcome_message()
+        
+        print("✅ Telegram Bot監聽已啟動")
+        return True
+    
+    def stop_listener(self):
+        """停止Telegram指令監聽"""
+        self.is_listening = False
+        if self.listener_thread:
+            self.listener_thread.join(timeout=1)
+    
+    def listen_for_commands(self):
+        """監聽Telegram指令（輪詢方式）"""
+        while self.is_listening:
+            try:
+                # 每3秒檢查一次新訊息
+                self.check_for_updates()
+                time.sleep(3)
+            except Exception as e:
+                print(f"❌ Telegram監聽錯誤: {e}")
+                time.sleep(5)  # 錯誤時等待長一點
+    
+    def check_for_updates(self):
+        """檢查Telegram更新"""
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
+            params = {
+                "offset": self.update_offset + 1,
+                "timeout": 2,
+                "allowed_updates": ["message", "callback_query"]
+            }
+            
+            response = requests.get(url, params=params, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                if data["ok"] and data["result"]:
+                    for update in data["result"]:
+                        self.process_update(update)
+                        self.update_offset = update["update_id"]
+        except Exception as e:
+            print(f"❌ 檢查Telegram更新失敗: {e}")
+    
+    def process_update(self, update):
+        """處理Telegram更新"""
+        try:
+            if "message" in update:
+                message = update["message"]
+                chat_id = str(message["chat"]["id"])
+                
+                # 只處理來自設定聊天室的訊息
+                if chat_id == self.chat_id:
+                    text = message.get("text", "")
+                    if text.startswith("/"):
+                        command = text.split()[0].lower()
+                        self.process_command(command, message)
+            
+            elif "callback_query" in update:
+                # 處理按鈕點擊事件
+                callback_query = update["callback_query"]
+                chat_id = str(callback_query["message"]["chat"]["id"])
+                
+                # 只處理來自設定聊天室的按鈕點擊
+                if chat_id == self.chat_id:
+                    self.handle_callback_query(callback_query)
+                    
+        except Exception as e:
+            print(f"❌ 處理Telegram訊息失敗: {e}")
+    
+    def process_command(self, command, message):
+        """處理Telegram指令"""
+        try:
+            if command in self.commands:
+                response = self.commands[command](message)
+            else:
+                response = self.handle_invalid_command()
+            
+            if response:
+                self.send_message(response)
+                
+        except Exception as e:
+            error_msg = f"❌ 指令執行失敗: {str(e)}\n時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            self.send_message(error_msg)
+            print(f"❌ 處理指令 {command} 失敗: {e}")
+    
+    def get_timestamp(self):
+        """取得格式化的時間戳"""
+        return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    def set_bot_commands(self):
+        """設定Bot指令清單（固定在聊天欄）"""
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/setMyCommands"
+            commands = [
+                {"command": "menu", "description": "📋 顯示操作選單"},
+                {"command": "status", "description": "📊 查看程式狀態"},
+                {"command": "pause", "description": "⏸️ 暫停程式"},
+                {"command": "resume", "description": "▶️ 恢復運行"},
+                {"command": "stop", "description": "⏹️ 停止程式"},
+                {"command": "screenshot", "description": "📸 螢幕截圖"}
+            ]
+            
+            data = {
+                'commands': json.dumps(commands)
+            }
+            
+            response = requests.post(url, data=data, timeout=10)
+            if response.status_code == 200:
+                print("✅ Bot指令選單設定成功")
+                return True
+            else:
+                print(f"❌ Bot指令選單設定失敗: {response.text}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ 設定Bot指令選單失敗: {e}")
+            return False
+    
+    def create_inline_keyboard(self):
+        """創建內聯鍵盤按鈕"""
+        keyboard = [
+            [
+                {"text": "📊 查看狀態", "callback_data": "status"},
+                {"text": "📸 螢幕截圖", "callback_data": "screenshot"}
+            ],
+            [
+                {"text": "⏸️ 暫停程式", "callback_data": "pause"},
+                {"text": "▶️ 恢復運行", "callback_data": "resume"}
+            ],
+            [
+                {"text": "⏹️ 停止程式", "callback_data": "stop"},
+                {"text": "📋 顯示選單", "callback_data": "menu"}
+            ]
+        ]
+        return {"inline_keyboard": keyboard}
+    
+    def handle_callback_query(self, callback_query):
+        """處理按鈕點擊回調"""
+        try:
+            callback_data = callback_query["data"]
+            query_id = callback_query["id"]
+            message_id = callback_query["message"]["message_id"]
+            
+            # 先回應callback_query（避免loading狀態）
+            self.answer_callback_query(query_id, "處理中...")
+            
+            # 根據按鈕數據處理相應功能
+            if callback_data == "status":
+                response = self.handle_status_callback()
+            elif callback_data == "screenshot":
+                response = self.handle_screenshot_callback()
+            elif callback_data == "pause":
+                response = self.handle_pause_callback()
+            elif callback_data == "resume":
+                response = self.handle_resume_callback()
+            elif callback_data == "stop":
+                response = self.handle_stop_callback()
+            elif callback_data == "menu":
+                response = self.handle_menu_callback()
+            else:
+                response = "❓ 未知的按鈕操作"
+            
+            # 更新原訊息內容
+            if response:
+                self.edit_message(message_id, response, self.create_inline_keyboard())
+                
+        except Exception as e:
+            print(f"❌ 處理按鈕點擊失敗: {e}")
+            try:
+                self.answer_callback_query(query_id, f"操作失敗: {str(e)}")
+            except:
+                pass
+    
+    def send_welcome_message(self):
+        """發送歡迎訊息"""
+        message = f"""🚀 Artale找Boss神器已啟動
+時間：{self.get_timestamp()}
+
+💡 兩種操作方式：
+🔹 點擊下方按鈕直接操作
+🔹 點擊聊天欄 "/" 選擇指令"""
+        self.send_message_with_keyboard(message, self.create_inline_keyboard())
+    
+    def handle_menu(self, message):
+        """處理 /menu 指令"""
+        menu_text = f"""🤖 Artale找Boss神器 - 指令清單
+
+📊 /status - 查看目前狀態和運行時間
+⏸️ /pause - 暫停程式
+▶️ /resume - 恢復程式運行  
+⏹️ /stop - 停止程式
+📸 /screenshot - 發送目前畫面截圖
+📋 /menu - 顯示此指令清單
+
+💡 三種操作方式：
+🔹 點擊下方按鈕直接操作
+🔹 點擊聊天欄 "/" 選擇指令
+🔹 直接輸入指令文字
+
+時間：{self.get_timestamp()}"""
+        
+        # 發送帶按鈕的選單
+        self.send_message_with_keyboard(menu_text, self.create_inline_keyboard())
+        return None  # 不需要額外回應
+    
+    def handle_status(self, message):
+        """處理 /status 指令"""
+        try:
+            current_stage = self.game_monitor.current_stage or "未知狀態"
+            
+            # 計算狀態持續時間
+            if hasattr(self.game_monitor, 'current_stage_start_time'):
+                elapsed = time.time() - self.game_monitor.current_stage_start_time
+                duration = self.format_duration(elapsed)
+            else:
+                duration = "未知"
+            
+            # 取得運行狀態
+            if self.game_monitor.is_running:
+                if self.game_monitor.is_paused:
+                    status_icon = "⏸️ 已暫停"
+                else:
+                    status_icon = "▶️ 運行中"
+            else:
+                status_icon = "⏹️ 已停止"
+            
+            status_text = f"""📊 程式狀態報告
+
+{status_icon}
+目前階段：{current_stage}
+持續時間：{duration}
+時間：{self.get_timestamp()}"""
+            
+            return status_text
+            
+        except Exception as e:
+            return f"❌ 取得狀態失敗: {str(e)}\n時間：{self.get_timestamp()}"
+    
+    def handle_pause(self, message):
+        """處理 /pause 指令"""
+        try:
+            if not self.game_monitor.is_running:
+                return f"⚠️ 程式尚未啟動，無法暫停\n時間：{self.get_timestamp()}"
+            
+            if self.game_monitor.is_paused:
+                return f"⚠️ 程式已經是暫停狀態\n時間：{self.get_timestamp()}"
+            
+            # 執行暫停
+            self.game_monitor.is_paused = True
+            self.game_monitor.pause_continue_btn.config(text="繼續")
+            
+            return f"✅ 程式已暫停\n時間：{self.get_timestamp()}"
+            
+        except Exception as e:
+            return f"❌ 暫停失敗: {str(e)}\n時間：{self.get_timestamp()}"
+    
+    def handle_resume(self, message):
+        """處理 /resume 指令"""
+        try:
+            if not self.game_monitor.is_running:
+                return f"⚠️ 程式尚未啟動，請先啟動程式\n時間：{self.get_timestamp()}"
+            
+            if not self.game_monitor.is_paused:
+                return f"⚠️ 程式已經在運行中\n時間：{self.get_timestamp()}"
+            
+            # 執行恢復
+            self.game_monitor.is_paused = False
+            self.game_monitor.pause_continue_btn.config(text="暫停")
+            
+            return f"✅ 程式已恢復運行\n時間：{self.get_timestamp()}"
+            
+        except Exception as e:
+            return f"❌ 恢復失敗: {str(e)}\n時間：{self.get_timestamp()}"
+    
+    def handle_stop(self, message):
+        """處理 /stop 指令"""
+        try:
+            if not self.game_monitor.is_running:
+                return f"⚠️ 程式已經是停止狀態\n時間：{self.get_timestamp()}"
+            
+            # 執行停止
+            self.game_monitor.is_running = False
+            self.game_monitor.is_paused = False
+            self.game_monitor.start_stop_btn.config(text="開始")
+            self.game_monitor.pause_continue_btn.config(text="暫停", state="disabled")
+            
+            return f"✅ 程式已停止\n時間：{self.get_timestamp()}"
+            
+        except Exception as e:
+            return f"❌ 停止失敗: {str(e)}\n時間：{self.get_timestamp()}"
+    
+    def handle_screenshot(self, message):
+        """處理 /screenshot 指令"""
+        try:
+            # 擷取全螢幕截圖
+            screenshot = pyautogui.screenshot()
+            
+            # 儲存為臨時檔案
+            temp_file = f"tmp_rovodev_screenshot_{int(time.time())}.png"
+            screenshot.save(temp_file)
+            
+            # 發送截圖
+            success = self.send_photo(temp_file, f"📸 螢幕截圖\n時間：{self.get_timestamp()}")
+            
+            # 刪除臨時檔案
+            try:
+                os.remove(temp_file)
+            except:
+                pass
+            
+            if success:
+                return None  # 圖片已發送，不需要額外文字回應
+            else:
+                return f"❌ 截圖發送失敗\n時間：{self.get_timestamp()}"
+                
+        except Exception as e:
+            return f"❌ 截圖失敗: {str(e)}\n時間：{self.get_timestamp()}"
+    
+    def handle_invalid_command(self):
+        """處理無效指令"""
+        return f"❓ 無效指令，請使用 /menu 查看可用指令\n時間：{self.get_timestamp()}"
+    
+    # 按鈕回調處理方法
+    def handle_status_callback(self):
+        """處理狀態查詢按鈕"""
+        return self.handle_status(None)
+    
+    def handle_screenshot_callback(self):
+        """處理截圖按鈕"""
+        self.handle_screenshot(None)
+        return f"📸 螢幕截圖已發送\n時間：{self.get_timestamp()}"
+    
+    def handle_pause_callback(self):
+        """處理暫停按鈕"""
+        return self.handle_pause(None)
+    
+    def handle_resume_callback(self):
+        """處理恢復按鈕"""
+        return self.handle_resume(None)
+    
+    def handle_stop_callback(self):
+        """處理停止按鈕"""
+        return self.handle_stop(None)
+    
+    def handle_menu_callback(self):
+        """處理選單按鈕"""
+        return f"""🤖 Artale找Boss神器 - 指令清單
+
+📊 查看狀態 - 顯示程式當前運行狀態
+📸 螢幕截圖 - 發送目前完整畫面截圖  
+⏸️ 暫停程式 - 暫停自動化流程
+▶️ 恢復運行 - 恢復暫停的流程
+⏹️ 停止程式 - 完全停止程式運行
+📋 顯示選單 - 顯示此說明
+
+💡 點擊上方按鈕即可操作
+時間：{self.get_timestamp()}"""
+    
+    def format_duration(self, seconds):
+        """格式化持續時間"""
+        if seconds <= 60:
+            return f"{int(seconds)}秒"
+        else:
+            minutes = int(seconds // 60)
+            remaining_seconds = int(seconds % 60)
+            if remaining_seconds > 0:
+                return f"{minutes}分{remaining_seconds}秒"
+            else:
+                return f"{minutes}分鐘"
+    
+    def send_message(self, text):
+        """發送Telegram訊息"""
+        return self.game_monitor.send_telegram_message(self.chat_id, text)
+    
+    def send_message_with_keyboard(self, text, keyboard):
+        """發送帶按鈕的Telegram訊息"""
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+            data = {
+                'chat_id': self.chat_id,
+                'text': text,
+                'reply_markup': json.dumps(keyboard)
+            }
+            
+            response = requests.post(url, data=data, timeout=10)
+            return response.status_code == 200
+            
+        except Exception as e:
+            print(f"❌ 發送帶按鈕的Telegram訊息失敗: {e}")
+            return False
+    
+    def edit_message(self, message_id, text, keyboard):
+        """編輯Telegram訊息"""
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/editMessageText"
+            data = {
+                'chat_id': self.chat_id,
+                'message_id': message_id,
+                'text': text,
+                'reply_markup': json.dumps(keyboard)
+            }
+            
+            response = requests.post(url, data=data, timeout=10)
+            return response.status_code == 200
+            
+        except Exception as e:
+            print(f"❌ 編輯Telegram訊息失敗: {e}")
+            return False
+    
+    def answer_callback_query(self, query_id, text=""):
+        """回應按鈕點擊"""
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/answerCallbackQuery"
+            data = {
+                'callback_query_id': query_id,
+                'text': text,
+                'show_alert': False
+            }
+            
+            response = requests.post(url, data=data, timeout=5)
+            return response.status_code == 200
+            
+        except Exception as e:
+            print(f"❌ 回應按鈕點擊失敗: {e}")
+            return False
+    
+    def send_photo(self, photo_path, caption=""):
+        """發送Telegram圖片"""
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/sendPhoto"
+            
+            with open(photo_path, 'rb') as photo:
+                files = {'photo': photo}
+                data = {
+                    'chat_id': self.chat_id,
+                    'caption': caption
+                }
+                
+                response = requests.post(url, files=files, data=data, timeout=30)
+                return response.status_code == 200
+                
+        except Exception as e:
+            print(f"❌ 發送Telegram圖片失敗: {e}")
+            return False
 
 class GameMonitor:
     def __init__(self):
@@ -42,6 +524,10 @@ class GameMonitor:
         self.crash_screenshots = {}
         self.setting_crash = None
         
+        # 狀態追蹤變數
+        self.current_stage_start_time = time.time()
+        self.last_stage_name = ""
+        
         # 滴管取色狀態
         self.eyedropper_active = False
         
@@ -62,7 +548,9 @@ class GameMonitor:
                 "login": None,      # 階段C點位
                 "character": None,  # 階段D點位
                 "channel": []       # 階段F的4個點位
-            }
+            },
+            "telegram_bot_token": "",
+            "send_welcome_message": True
         }
         
         # 先載入設定，再設定視窗位置
@@ -70,6 +558,10 @@ class GameMonitor:
         self.load_window_geometry()
         self.create_widgets()
         self.setup_hotkeys()
+        
+        # 初始化Telegram Bot（在config載入後）
+        self.telegram_bot = TelegramBot(self)
+        self.telegram_bot.start_listener()
         
         # 綁定視窗關閉事件
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -1211,6 +1703,12 @@ class GameMonitor:
     
     def update_status(self):
         """更新狀態顯示"""
+        # 檢測狀態變化並更新時間記錄
+        if self.current_stage != self.last_stage_name:
+            self.current_stage_start_time = time.time()
+            self.last_stage_name = self.current_stage
+            print(f"狀態變更: {self.current_stage}")
+        
         self.status_label.config(text=f"目前狀態: {self.current_stage}")
     
     def validate_config(self):
@@ -2006,7 +2504,8 @@ class GameMonitor:
                     "login": None,
                     "character": None,
                     "channel": []
-                }
+                },
+                "send_welcome_message": True
             }
             self.chat_id_entry.delete(0, tk.END)
             self.threshold_entry.delete(0, tk.END)
@@ -2464,6 +2963,13 @@ class GameMonitor:
             if hasattr(self, 'eyedropper_mouse_listener'):
                 try:
                     self.eyedropper_mouse_listener.stop()
+                except:
+                    pass
+            
+            # 停止Telegram Bot監聽
+            if hasattr(self, 'telegram_bot'):
+                try:
+                    self.telegram_bot.stop_listener()
                 except:
                     pass
             
