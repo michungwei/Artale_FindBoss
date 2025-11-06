@@ -528,6 +528,10 @@ class GameMonitor:
         self.current_stage_start_time = time.time()
         self.last_stage_name = ""
         
+        # 超時通知變數
+        self.timeout_notified_for_current_stage = False
+        self.last_timeout_notification_time = 0
+        
         # 滴管取色狀態
         self.eyedropper_active = False
         
@@ -550,7 +554,9 @@ class GameMonitor:
                 "channel": []       # 階段F的4個點位
             },
             "telegram_bot_token": "",
-            "send_welcome_message": True
+            "send_welcome_message": True,
+            "stage_timeout_seconds": 300,
+            "stage_timeout_enabled": True
         }
         
         # 先載入設定，再設定視窗位置
@@ -894,10 +900,22 @@ class GameMonitor:
                                      variable=self.boss_behavior_var, value=False)
         manual_radio.grid(row=1, column=0, sticky=tk.W)
         
+        # 階段超時設定
+        ttk.Label(parent, text="階段超時時間:").grid(row=6, column=0, sticky=tk.W)
+        self.stage_timeout_entry = ttk.Entry(parent, width=10)
+        self.stage_timeout_entry.grid(row=6, column=1, sticky=tk.W, padx=5)
+        # 載入現有設定（轉換為分鐘顯示）
+        timeout_minutes = self.config.get("stage_timeout_seconds", 300) // 60
+        self.stage_timeout_entry.insert(0, str(timeout_minutes))
+        
+        # 階段超時說明標籤
+        timeout_help = ttk.Label(parent, text="(分鐘，階段停留過久時發送通知)", font=('Arial', 8), foreground="gray")
+        timeout_help.grid(row=6, column=2, sticky=tk.W, padx=5)
+        
         # 顏色資訊顯示
-        ttk.Label(parent, text="RGB值:").grid(row=6, column=0, sticky=tk.W)
+        ttk.Label(parent, text="RGB值:").grid(row=7, column=0, sticky=tk.W)
         self.rgb_label = ttk.Label(parent, text=f"({self.config['target_color'][0]}, {self.config['target_color'][1]}, {self.config['target_color'][2]})")
-        self.rgb_label.grid(row=6, column=1, sticky=tk.W, padx=5)
+        self.rgb_label.grid(row=7, column=1, sticky=tk.W, padx=5)
     
     def create_position_widgets(self, parent):
         """創建點位設定組件"""
@@ -1707,9 +1725,87 @@ class GameMonitor:
         if self.current_stage != self.last_stage_name:
             self.current_stage_start_time = time.time()
             self.last_stage_name = self.current_stage
+            self.timeout_notified_for_current_stage = False  # 重置超時通知狀態
             print(f"狀態變更: {self.current_stage}")
         
+        # 檢查階段停留超時
+        self.check_stage_timeout()
+        
         self.status_label.config(text=f"目前狀態: {self.current_stage}")
+    
+    def check_stage_timeout(self):
+        """檢查階段停留超時"""
+        try:
+            # 檢查是否啟用超時通知
+            if not self.config.get("stage_timeout_enabled", True):
+                return
+            
+            # 如果已經通知過當前階段，跳過
+            if self.timeout_notified_for_current_stage:
+                return
+            
+            # 計算當前階段停留時間
+            current_time = time.time()
+            elapsed_time = current_time - self.current_stage_start_time
+            timeout_threshold = self.config.get("stage_timeout_seconds", 300)
+            
+            # 檢查是否超時
+            if elapsed_time > timeout_threshold:
+                self.send_stage_timeout_notification(elapsed_time, timeout_threshold)
+                self.timeout_notified_for_current_stage = True
+                self.last_timeout_notification_time = current_time
+                
+        except Exception as e:
+            print(f"❌ 檢查階段超時失敗: {e}")
+    
+    def send_stage_timeout_notification(self, elapsed_time, threshold_time):
+        """發送階段超時通知"""
+        try:
+            # 格式化時間顯示
+            elapsed_str = self.format_duration_for_timeout(elapsed_time)
+            threshold_str = self.format_duration_for_timeout(threshold_time)
+            
+            # 構建通知訊息
+            message = f"""⚠️ 階段停留過久
+
+目前階段：{self.current_stage}
+停留時間：{elapsed_str}
+設定閾值：{threshold_str}
+
+時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
+            
+            # 發送Telegram通知
+            if hasattr(self, 'telegram_bot') and self.telegram_bot:
+                chat_id = self.config.get("telegram_chat_id", "")
+                if chat_id:
+                    self.telegram_bot.send_message(message)
+                    print(f"✅ 已發送階段超時通知: {self.current_stage}")
+                else:
+                    print("⚠️ 未設定Telegram Chat ID，無法發送超時通知")
+            else:
+                print("⚠️ Telegram Bot未初始化，無法發送超時通知")
+                
+        except Exception as e:
+            print(f"❌ 發送階段超時通知失敗: {e}")
+    
+    def format_duration_for_timeout(self, seconds):
+        """格式化超時時間顯示"""
+        if seconds < 60:
+            return f"{int(seconds)}秒"
+        elif seconds < 3600:
+            minutes = int(seconds // 60)
+            remaining_seconds = int(seconds % 60)
+            if remaining_seconds > 0:
+                return f"{minutes}分{remaining_seconds}秒"
+            else:
+                return f"{minutes}分鐘"
+        else:
+            hours = int(seconds // 3600)
+            remaining_minutes = int((seconds % 3600) // 60)
+            if remaining_minutes > 0:
+                return f"{hours}小時{remaining_minutes}分鐘"
+            else:
+                return f"{hours}小時"
     
     def validate_config(self):
         """驗證設定完整性"""
@@ -2296,6 +2392,9 @@ class GameMonitor:
         self.config["color_tolerance"] = int(self.color_tolerance_entry.get())
         self.config["boss_wait_time"] = int(self.boss_wait_entry.get())
         self.config["stage_similarity_threshold"] = int(self.stage_similarity_entry.get())
+        # 階段超時設定（轉換分鐘為秒）
+        timeout_minutes = int(self.stage_timeout_entry.get())
+        self.config["stage_timeout_seconds"] = timeout_minutes * 60
         
         # 儲存階段截圖
         self.save_stage_screenshots()
@@ -2505,7 +2604,9 @@ class GameMonitor:
                     "character": None,
                     "channel": []
                 },
-                "send_welcome_message": True
+                "send_welcome_message": True,
+                "stage_timeout_seconds": 300,
+                "stage_timeout_enabled": True
             }
             self.chat_id_entry.delete(0, tk.END)
             self.threshold_entry.delete(0, tk.END)
