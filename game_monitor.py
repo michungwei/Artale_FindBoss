@@ -12,6 +12,9 @@ import time
 import threading
 from datetime import datetime
 import pyautogui
+# 設定PyAutoGUI參數避免fail-safe問題
+pyautogui.FAILSAFE = False  # 禁用fail-safe（謹慎使用）
+pyautogui.PAUSE = 0.5  # 每次操作間隔0.5秒
 import requests
 from PIL import Image, ImageTk
 import cv2
